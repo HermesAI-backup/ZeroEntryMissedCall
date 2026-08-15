@@ -17,15 +17,24 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
-from config import get_settings
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger("localtunnel-watchdog")
 
-settings = get_settings()
+# Lazy-load API key without triggering load_dotenv() (which poisons subprocess
+# environment and breaks localtunnel on Windows).
+def _load_api_key() -> str:
+    env = Path(__file__).resolve().parent / ".env"
+    if not env.exists():
+        return ""
+    with open(env) as f:
+        for line in f:
+            if line.startswith("TELNYX_API_KEY="):
+                val = line.strip().split("=", 1)[1]
+                return val.strip().strip('"').strip("'")
+    return ""
 
 LOCAL_PORT = 8080
 TEXML_APP_ID = "3026763910813320521"  # Zero Entry Missed Call AI
@@ -35,7 +44,7 @@ MAX_RESTART_BACKOFF = 300  # max seconds between restart attempts
 
 def update_texml_webhook(base_url: str) -> bool:
     """Point the TeXML application's voice_url at the current tunnel URL."""
-    api_key = settings.telnyx_api_key
+    api_key = _load_api_key()
     if not api_key:
         logger.warning("TELNYX_API_KEY not set — skipping webhook update")
         return False
@@ -72,24 +81,26 @@ def update_texml_webhook(base_url: str) -> bool:
 
 
 def start_tunnel() -> tuple[subprocess.Popen | None, str | None]:
-    """Start localtunnel and return (process, url). Blocks until URL is found."""
-    npx = shutil.which("npx") or shutil.which("npx.cmd")
-    if not npx:
-        # Fallback: look in common Hermes node path
-        for candidate in [
-            r"C:\Users\Sevin\AppData\Local\hermes\node\npx.cmd",
-            r"C:\Users\Sevin\AppData\Local\hermes\node\npx",
-        ]:
-            if Path(candidate).exists():
-                npx = candidate
-                break
-    if not npx:
-        logger.error("npx not found — install Node.js or run: npm install -g localtunnel")
-        return None, None
+    """Start localtunnel and return (process, url). Blocks until URL is found.
 
-    logger.info("Starting localtunnel on port %s (npx=%s)...", LOCAL_PORT, npx)
+    Launches via bash -c because Windows Node.js .CMD wrappers hang under
+    subprocess.PIPE without a real console, but bash handles them fine.
+    """
+    # Prefer global lt, fall back to npx localtunnel
+    lt = shutil.which("lt") or shutil.which("lt.cmd")
+    if lt:
+        cmd = f'lt --port {LOCAL_PORT} 2>&1'
+    else:
+        npx = shutil.which("npx") or shutil.which("npx.cmd")
+        if npx:
+            cmd = f'npx localtunnel --port {LOCAL_PORT} 2>&1'
+        else:
+            logger.error("Neither lt nor npx found — install: npm i -g localtunnel")
+            return None, None
+
+    logger.info("Starting localtunnel on port %s via bash...", LOCAL_PORT)
     proc = subprocess.Popen(
-        [npx, "localtunnel", "--port", str(LOCAL_PORT)],
+        ["bash", "-c", cmd],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
