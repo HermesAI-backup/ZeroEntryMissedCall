@@ -1,0 +1,36 @@
+# Secrets
+.env
+google_token.json
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Database
+data/conversations.db
+*.db
+
+# Tunnels
+.tunnel_url
+.serveo_url
+
+# Cache / logs
+*.log
+cache/
+
+# OS
+.DS_Store
+Thumbs.db
+NUL
+
+# IDE
+.vscode/
+.idea/
+
+# Temp scripts
+*.tmp
