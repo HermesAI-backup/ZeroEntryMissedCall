@@ -86,6 +86,26 @@ async def _handle_missed_call(phone_number: str):
                 whitelisted.name or "unknown",
             )
             return
+
+        # Dedupe: skip if we already texted this number in the last 10 min.
+        # Prevents double-texting when a caller hangs up and immediately redials.
+        ten_min_ago = datetime.datetime.utcnow() - datetime.timedelta(minutes=10)
+        recent = (
+            db.query(Conversation)
+            .filter(
+                Conversation.phone_number == phone_number,
+                Conversation.last_ai_sent_at >= ten_min_ago,
+            )
+            .first()
+        )
+        if recent:
+            logger.info(
+                "Duplicate call from %s — already texted %s ago (conv #%d), skipping",
+                phone_number,
+                (datetime.datetime.utcnow() - recent.last_ai_sent_at).seconds,
+                recent.id,
+            )
+            return
     finally:
         db.close()
 
