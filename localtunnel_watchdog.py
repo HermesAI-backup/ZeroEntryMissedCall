@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import subprocess
 import time
 import urllib.request
@@ -72,18 +73,28 @@ def update_texml_webhook(base_url: str) -> bool:
 
 def start_tunnel() -> tuple[subprocess.Popen | None, str | None]:
     """Start localtunnel and return (process, url). Blocks until URL is found."""
-    logger.info("Starting localtunnel on port %s...", LOCAL_PORT)
-    try:
-        proc = subprocess.Popen(
-            ["npx", "localtunnel", "--port", str(LOCAL_PORT)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-    except FileNotFoundError:
+    npx = shutil.which("npx") or shutil.which("npx.cmd")
+    if not npx:
+        # Fallback: look in common Hermes node path
+        for candidate in [
+            r"C:\Users\Sevin\AppData\Local\hermes\node\npx.cmd",
+            r"C:\Users\Sevin\AppData\Local\hermes\node\npx",
+        ]:
+            if Path(candidate).exists():
+                npx = candidate
+                break
+    if not npx:
         logger.error("npx not found — install Node.js or run: npm install -g localtunnel")
         return None, None
+
+    logger.info("Starting localtunnel on port %s (npx=%s)...", LOCAL_PORT, npx)
+    proc = subprocess.Popen(
+        [npx, "localtunnel", "--port", str(LOCAL_PORT)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
 
     url = None
     timeout = 45

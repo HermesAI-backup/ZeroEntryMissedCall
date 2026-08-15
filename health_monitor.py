@@ -26,7 +26,8 @@ def load_env(key: str) -> str:
     with open(env) as f:
         for line in f:
             if line.startswith(f"{key}="):
-                return line.strip().split("=", 1)[1]
+                val = line.strip().split("=", 1)[1]
+                return val.strip().strip('"').strip("'")
     return ""
 
 
