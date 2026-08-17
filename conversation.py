@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import datetime
+import json
+import logging
+from zoneinfo import ZoneInfo
+
 import yaml
 from pathlib import Path
+
+logger = logging.getLogger("conversation")
 
 from config import get_settings
 from llm_client import LLMClient
@@ -104,11 +111,18 @@ class ConversationEngine:
             "required": ["customer_name", "address", "appt_date", "appt_time"],
         }
 
+        # Anchor relative dates ("tomorrow", "next Tuesday") to TODAY. Without
+        # this the extractor can't turn "tomorrow morning" into a real date.
+        today = datetime.datetime.now(ZoneInfo("America/Denver")).date().isoformat()
         system_prompt = (
             "You are a booking-detail extractor. Read the conversation below and "
             "extract the customer's booking information. Return ONLY valid JSON with "
             "the exact keys specified. Use an empty string for any field the customer "
-            "has NOT yet provided."
+            "has NOT yet provided.\n"
+            f"Today's date is {today}. Interpret relative dates ('tomorrow', "
+            "'next Tuesday', 'this week', 'next week') as actual dates relative to "
+            "today, and relative times ('morning' = 09:00, 'afternoon' = 13:00, "
+            "'evening' = 17:00) as concrete HH:MM times."
         )
 
         messages = [
@@ -121,6 +135,39 @@ class ConversationEngine:
             json_schema=schema,
             temperature=0.1,
         )
+
+        # Some models (deepseek reasoning, gpt-4.1-mini) return the WRONG keys
+        # ("date"/"time"/"name") despite the schema. One correction pass with
+        # the exact shape spelled out fixes it deterministically.
+        required = ["customer_name", "address", "appt_date", "appt_time"]
+        if not isinstance(result, dict) or any(k not in result for k in required):
+            logger.warning(
+                "Extractor returned wrong shape (%s) — correction pass",
+                list(result.keys()) if isinstance(result, dict) else type(result).__name__,
+            )
+            correction = [
+                {"role": "system", "content": system_prompt},
+                *conversation_history,
+                {
+                    "role": "assistant",
+                    "content": json.dumps(result) if isinstance(result, dict) else str(result),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "That response used the wrong keys. Return the booking info as "
+                        "JSON with EXACTLY these keys and nothing else: "
+                        '{"customer_name": "full name or empty string", '
+                        '"address": "service address or empty string", '
+                        '"appt_date": "YYYY-MM-DD or empty string", '
+                        '"appt_time": "HH:MM or empty string"}. '
+                        "Use empty strings for any field the customer has NOT provided."
+                    ),
+                },
+            ]
+            result = await self.llm.chat_structured(
+                correction, json_schema=schema, temperature=0.1
+            )
 
         # Defensive: ensure all keys exist, fill missing with ""
         return {

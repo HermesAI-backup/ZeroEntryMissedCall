@@ -405,8 +405,36 @@ async def inbound_sms(
         )
 
         if not conversation:
-            logger.info("No active conversation for %s — ignoring", From)
-            return PlainTextResponse("")
+            # Customer texted the line with no active conversation — start one
+            # instead of ignoring. (Missed calls trigger via the call webhook;
+            # direct texts are a real channel too.)
+            logger.info("No active conversation for %s — auto-starting", From)
+            engine_new = ConversationEngine()
+            initial = engine_new.get_initial_message()
+            contact = db.query(Contact).filter(Contact.phone_number == From).first()
+            if not contact:
+                contact = Contact(phone_number=From, tags=["text-in"])
+                db.add(contact)
+                db.flush()
+            conversation = Conversation(
+                contact_id=contact.id,
+                phone_number=From,
+                business_type=engine_new.business_type,
+                state="active",
+                initial_delay_seconds=0,
+                max_responses=engine_new.max_responses(),
+                response_count=1,
+                last_ai_sent_at=datetime.datetime.utcnow(),
+                metadata_json={},
+            )
+            db.add(conversation)
+            db.flush()
+            db.add(Message(
+                conversation_id=conversation.id,
+                role="assistant",
+                content=initial,
+            ))
+            db.commit()
 
         # Check response limit
         if conversation.response_count >= conversation.max_responses:
@@ -469,7 +497,44 @@ async def inbound_sms(
             meta.update({k: v for k, v in booking_details.items() if v})
             conversation.metadata_json = meta
 
-        # Send SMS
+        # ---- BOOKED: book BEFORE confirming. Never tell a customer "see you
+        # then!" for a slot that failed the calendar write. ----
+        booking_done = False
+        if branch == "booked":
+            booking_result = _book_conversation(db, conversation, reason)
+            if booking_result is None:
+                reply = ("I've got everything except the day and time — what works "
+                         "for you? I'll check the calendar and lock it in.")
+                send_sms(From, reply)
+                db.add(Message(conversation_id=conversation.id, role="assistant", content=reply))
+                conversation.response_count = (conversation.response_count or 0) + 1
+                conversation.last_ai_sent_at = datetime.datetime.utcnow()
+                db.commit()
+                logger.info("Booking incomplete (no date/time) — asked %s for a slot", From)
+                return PlainTextResponse("")
+            if booking_result.get("status") != "booked":
+                if booking_result.get("status") == "conflict":
+                    from scheduler import next_available_slot
+                    meta = conversation.metadata_json or {}
+                    nxt = next_available_slot(meta.get("appt_date", ""), meta.get("appt_time", ""))
+                    nxt_clause = f" — how about {nxt} instead?" if nxt else ""
+                    reply = (
+                        f"Ah, {meta.get('appt_time', 'that time')} just filled up"
+                        f"{nxt_clause} Or let me know another time that works for you."
+                    )
+                else:
+                    reply = ("Hmm, I couldn't lock that in — could you confirm the "
+                             "day and time you'd like?")
+                send_sms(From, reply)
+                db.add(Message(conversation_id=conversation.id, role="assistant", content=reply))
+                conversation.response_count = (conversation.response_count or 0) + 1
+                conversation.last_ai_sent_at = datetime.datetime.utcnow()
+                db.commit()
+                logger.info("Booking failed (%s) — sent fallback to %s", booking_result.get("status"), From)
+                return PlainTextResponse("")
+            booking_done = True  # booked OK — send the AI's confirmation below
+
+        # Send SMS (for booked: only after the calendar write succeeded)
         sid = send_sms(From, reply)
         msg_out = Message(
             conversation_id=conversation.id,
@@ -478,14 +543,14 @@ async def inbound_sms(
         )
         db.add(msg_out)
 
-        conversation.response_count = (history_messages[-1].id if history_messages else 0) + 1  # rough
+        conversation.response_count = (conversation.response_count or 0) + 1
         conversation.last_ai_sent_at = datetime.datetime.utcnow()
 
         # Handle branch detection
         if branch and branch != "none":
             conversation.branch = branch
             conversation.state = "completed"
-            _handle_branch_action(db, conversation, branch, reason)
+            _handle_branch_action(db, conversation, branch, reason, booking_done=booking_done)
             logger.info(
                 "Conv #%d branched to '%s': %s", conversation.id, branch, reason
             )
@@ -502,7 +567,80 @@ async def inbound_sms(
     return PlainTextResponse("")
 
 
-def _handle_branch_action(db, conversation: Conversation, branch: str, reason: str | None):
+def _book_conversation(db, conversation: Conversation, reason: str | None) -> dict | None:
+    """Book the appointment for a booked-branch conversation.
+
+    Returns the scheduler result dict, or None if the conversation has no
+    usable date/time (caller should ask the customer for one).
+
+    On success also: notifies the owner, schedules the 24h reminder, queues
+    the Review Engine completion flow, cancels the quiet-lead follow-up, and
+    records the event id in metadata (prevents double-booking).
+    """
+    contact = db.query(Contact).filter(Contact.id == conversation.contact_id).first()
+    meta = conversation.metadata_json or {}
+    cust_name = meta.get("customer_name", "")
+    cust_phone = meta.get("customer_phone", conversation.phone_number)
+    address = meta.get("address", "")
+    service_type = meta.get("service_type", settings.business_type)
+    appt_date = meta.get("appt_date", "")
+    appt_time = meta.get("appt_time", "")
+
+    if not (appt_date and appt_time):
+        return None
+
+    from scheduler import book_appointment
+    try:
+        result = book_appointment(
+            date_str=appt_date,
+            time_str=appt_time,
+            customer_name=cust_name or reason or "Customer",
+            customer_phone=cust_phone,
+            address=address or "TBD",
+            service_type=service_type,
+            business_name=settings.business_name,
+        )
+        logger.info("SCHEDULER: %s — %s", result["status"], result.get("message", ""))
+        if result["status"] == "booked":
+            meta["_booked_event"] = result.get("event_id", "unknown")
+            conversation.metadata_json = meta
+            notify_business_booked(
+                customer_name=cust_name or reason or "Customer",
+                appt_date=appt_date,
+                appt_time=appt_time,
+                service_type=service_type,
+            )
+            schedule_reminder(
+                phone_number=conversation.phone_number,
+                appt_date=appt_date,
+                appt_time=appt_time,
+                business_name=settings.business_name,
+                service_type=service_type,
+                conversation_id=conversation.id,
+            )
+            engine_link = ConversationEngine(
+                business_type=conversation.business_type
+            ).review_link()
+            appt_dt = _parse_appt(appt_date, appt_time)
+            schedule_completion_flow(
+                phone_number=conversation.phone_number,
+                customer_name=cust_name or "",
+                service_type=service_type,
+                completed_at=appt_dt,
+                email=(contact.email if contact else "") or "",
+                review_link=engine_link or None,
+                conversation_id=conversation.id,
+            )
+            cancel_tasks("follow_up", conversation.phone_number, conversation.id)
+        return result
+    except Exception as e:
+        logger.error("SCHEDULER error: %s", e)
+        return {"status": "error", "message": str(e)}
+
+
+def _handle_branch_action(
+    db, conversation: Conversation, branch: str, reason: str | None, booking_done: bool = False
+):
     """Execute side effects when a branch is hit — notifications, tags, etc."""
     contact = (
         db.query(Contact).filter(Contact.id == conversation.contact_id).first()
@@ -513,66 +651,11 @@ def _handle_branch_action(db, conversation: Conversation, branch: str, reason: s
             new_tags = list(set(contact.tags + ["booked-appointment"]))
             contact.tags = new_tags
         logger.info("BOOKED: %s — %s", conversation.phone_number, reason)
-
-        # Extract booking details from conversation metadata
-        meta = conversation.metadata_json or {}
-        cust_name = meta.get("customer_name", "")
-        cust_phone = meta.get("customer_phone", conversation.phone_number)
-        address = meta.get("address", "")
-        service_type = meta.get("service_type", settings.business_type)
-        appt_date = meta.get("appt_date", "")
-        appt_time = meta.get("appt_time", "10:00 AM")
-
-        # Try to book via scheduler
-        if appt_date and appt_time:
-            from scheduler import book_appointment
-            try:
-                result = book_appointment(
-                    date_str=appt_date,
-                    time_str=appt_time,
-                    customer_name=cust_name or reason or "Customer",
-                    customer_phone=cust_phone,
-                    address=address or "TBD",
-                    service_type=service_type,
-                    business_name=settings.business_name,
-                )
-                logger.info("SCHEDULER: %s — %s", result["status"], result.get("message", ""))
-                if result["status"] == "booked":
-                    # Notify business owner (real owner phone, not the AI number)
-                    notify_business_booked(
-                        customer_name=cust_name or reason or "Customer",
-                        appt_date=appt_date,
-                        appt_time=appt_time,
-                        service_type=service_type,
-                    )
-                    # Schedule appointment reminder (24h before)
-                    schedule_reminder(
-                        phone_number=conversation.phone_number,
-                        appt_date=appt_date,
-                        appt_time=appt_time,
-                        business_name=settings.business_name,
-                        service_type=service_type,
-                        conversation_id=conversation.id,
-                    )
-                    # Review Engine: thank-you + review request 2h after the
-                    # appointment (job completion), plus follow-up + email fallback
-                    engine_link = ConversationEngine(
-                        business_type=conversation.business_type
-                    ).review_link()
-                    appt_dt = _parse_appt(appt_date, appt_time)
-                    schedule_completion_flow(
-                        phone_number=conversation.phone_number,
-                        customer_name=cust_name or "",
-                        service_type=service_type,
-                        completed_at=appt_dt,
-                        email=(contact.email if contact else "") or "",
-                        review_link=engine_link or None,
-                        conversation_id=conversation.id,
-                    )
-                    # Lead engaged — cancel the 24h follow-up
-                    cancel_tasks("follow_up", conversation.phone_number, conversation.id)
-            except Exception as e:
-                logger.error("SCHEDULER error: %s", e)
+        if not booking_done:
+            # Callers that don't book before the branch action (e.g. tests)
+            # book here; inbound_sms books BEFORE sending the confirmation
+            # and passes booking_done=True so we don't double-book.
+            _book_conversation(db, conversation, reason)
 
     elif branch == "emergency":
         if contact:

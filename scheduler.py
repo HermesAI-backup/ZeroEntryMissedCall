@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -14,14 +15,38 @@ logger = logging.getLogger("scheduler")
 SPREADSHEET_ID = "125kdPgT4YS8D2eRZHXA8Y3V0qVDlZVjtkk4Bou-rTIY"
 SHEET_NAME = "Schedule"
 
-GAPI_SCRIPT = str(
-    Path(__file__).resolve().parent.parent
-    / "skills"
-    / "productivity"
-    / "google-workspace"
-    / "scripts"
-    / "google_api.py"
-)
+
+def _find_gapi_script() -> str:
+    """Locate the google-workspace skill's google_api.py across layouts.
+
+    The skill lives under the ACTIVE Hermes profile's skills dir; the profile
+    was renamed (email-auto → textback-ai), which moved the path. Try the
+    current profile, any profile, and legacy locations before giving up.
+    """
+    local = Path(os.environ.get("LOCALAPPDATA", ""))
+    candidates: list[Path] = [
+        local / "hermes" / "profiles" / "textback-ai" / "skills" / "productivity"
+        / "google-workspace" / "scripts" / "google_api.py",
+    ]
+    profiles_dir = local / "hermes" / "profiles"
+    if profiles_dir.exists():
+        candidates += [
+            p / "skills" / "productivity" / "google-workspace" / "scripts" / "google_api.py"
+            for p in sorted(profiles_dir.glob("*"))
+        ]
+    candidates += [
+        Path(__file__).resolve().parent.parent / "skills" / "productivity"
+        / "google-workspace" / "scripts" / "google_api.py",
+        Path.home() / ".hermes" / "skills" / "productivity"
+        / "google-workspace" / "scripts" / "google_api.py",
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return str(candidates[0])  # best effort — _run_gapi will surface the error
+
+
+GAPI_SCRIPT = _find_gapi_script()
 
 
 def _run_gapi(*args: str) -> dict:
@@ -39,6 +64,19 @@ def _run_gapi(*args: str) -> dict:
     except json.JSONDecodeError:
         logger.error("gapi returned non-JSON: %s", result.stdout[:200])
         return {"status": "error", "error": "non-JSON response"}
+
+
+def _event_bounds(event: dict) -> tuple[str, str]:
+    """Extract (start, end) ISO strings from a calendar event.
+
+    google_api.py returns FLATTENED events ("start": "2026-08-18T02:00:00Z");
+    the raw Google API nests them ({"dateTime": ...}). Handle both.
+    """
+    s = event.get("start", {})
+    e = event.get("end", {})
+    s_raw = s.get("dateTime", "") if isinstance(s, dict) else s
+    e_raw = e.get("dateTime", "") if isinstance(e, dict) else e
+    return str(s_raw or ""), str(e_raw or "")
 
 
 def check_availability(
@@ -74,8 +112,8 @@ def check_availability(
     day_end = dt.replace(hour=23, minute=59).strftime(f"%Y-%m-%dT%H:%M:%S{tz}")
     
     result = _run_gapi("calendar", "list", "--start", day_start, "--end", day_end)
-    
-    if result.get("status") == "error":
+
+    if isinstance(result, dict) and result.get("status") == "error":
         logger.error("Calendar check failed: %s", result.get("error"))
         return True, ""  # If calendar fails, let it through
     
@@ -86,8 +124,7 @@ def check_availability(
     slot_end = (dt + datetime.timedelta(minutes=duration_minutes)).timestamp()
     
     for event in events:
-        event_start = event.get("start", {}).get("dateTime", "")
-        event_end = event.get("end", {}).get("dateTime", "")
+        event_start, event_end = _event_bounds(event)
         if event_start and event_end:
             try:
                 es = datetime.datetime.fromisoformat(event_start).timestamp()
@@ -99,6 +136,96 @@ def check_availability(
                 continue
     
     return True, ""
+
+
+def _first_free_slot(
+    busy_ranges: list[tuple[float, float]],
+    day_start: float,
+    day_end: float,
+    duration_minutes: int = 60,
+    after: float | None = None,
+) -> datetime.datetime | None:
+    """Find the first free slot of duration_minutes within [day_start, day_end),
+    at/after `after`. busy_ranges are [start, end) epoch timestamps.
+
+    Pure function — no I/O — so it's unit-testable.
+    """
+    cursor = max(day_start, after or day_start)
+    slot_seconds = duration_minutes * 60
+    for es, ee in sorted(busy_ranges):
+        if ee <= cursor:
+            continue
+        if es - cursor >= slot_seconds:
+            return datetime.datetime.fromtimestamp(cursor)
+        cursor = max(cursor, ee)
+    if day_end - cursor >= slot_seconds:
+        return datetime.datetime.fromtimestamp(cursor)
+    return None
+
+
+def next_available_slot(
+    date_str: str,
+    time_str: str = "",
+    duration_minutes: int = 60,
+    day_start_hour: int = 8,
+    day_end_hour: int = 18,
+    events: list | None = None,
+) -> str | None:
+    """Find the next open slot on the requested day, at/after the requested time.
+
+    Uses REAL calendar data (existing events on that day). Default window
+    8am-6pm — no per-client business hours exist yet; BUSINESS_HOURS will
+    override this later (see Master Task List §3). Returns "3:00 PM" or None.
+
+    Pass `events` (list of gapi calendar events) to test without I/O.
+    """
+    try:
+        if time_str and ("AM" in time_str.upper() or "PM" in time_str.upper()):
+            dt = datetime.datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %I:%M %p")
+        elif time_str:
+            dt = datetime.datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+        else:
+            dt = datetime.datetime.strptime(date_str, "%Y-%m-%d").replace(hour=day_start_hour)
+    except ValueError:
+        dt = datetime.datetime.strptime(date_str, "%Y-%m-%d").replace(hour=day_start_hour)
+
+    tz = "-06:00"
+    day_start = dt.replace(hour=day_start_hour, minute=0)
+    day_end = dt.replace(hour=day_end_hour, minute=0)
+
+    if events is None:
+        result = _run_gapi(
+            "calendar", "list",
+            "--start", day_start.strftime(f"%Y-%m-%dT%H:%M:%S{tz}"),
+            "--end", day_end.strftime(f"%Y-%m-%dT%H:%M:%S{tz}"),
+        )
+        if isinstance(result, dict) and result.get("status") == "error":
+            logger.error("Calendar check failed: %s", result.get("error"))
+            return None
+        events = result if isinstance(result, list) else result.get("data", [])
+
+    busy = []
+    for event in events:
+        es_raw, ee_raw = _event_bounds(event)
+        if es_raw and ee_raw:
+            try:
+                busy.append((
+                    datetime.datetime.fromisoformat(es_raw).timestamp(),
+                    datetime.datetime.fromisoformat(ee_raw).timestamp(),
+                ))
+            except (ValueError, TypeError):
+                continue
+
+    slot = _first_free_slot(
+        busy,
+        day_start.timestamp(),
+        day_end.timestamp(),
+        duration_minutes,
+        after=dt.timestamp() if time_str else None,
+    )
+    if slot is None:
+        return None
+    return slot.strftime("%I:%M %p").lstrip("0")
 
 
 def book_appointment(
