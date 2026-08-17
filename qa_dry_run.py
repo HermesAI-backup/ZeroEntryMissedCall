@@ -62,7 +62,7 @@ SCENARIOS: list[dict] = [
          check="must collect name/business/phone for Sevin"),
     dict(id="prospect_pricing", persona="sales", expected="none",
          turns=["how much does this cost?"],
-         check="MUST quote $200 setup + 10% of profit — NEVER 15%"),
+         check="MUST quote $200 setup + 10% of the jobs it books — NEVER 15%"),
     dict(id="prospect_skeptic", persona="sales", expected="none",
          turns=["i dunno man sounds like another ai scam"],
          check="reassure matter-of-factly, not pushy"),
