@@ -34,5 +34,8 @@ NUL
 .idea/
 
 # Temp scripts
-*.tmpdata/conversations.db-wal
+*.tmp
+
+# SQLite WAL/SHM (volatile — never commit)
+data/conversations.db-wal
 data/conversations.db-shm
