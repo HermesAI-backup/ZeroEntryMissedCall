@@ -194,6 +194,18 @@ async def _handle_missed_call(phone_number: str):
 # ---------------------------------------------------------------------------
 
 
+def _telnym_number(field) -> str:
+    """Normalize a Telnyx number field to a plain E.164 string.
+
+    Telnyx API v2 sends `from`/`to` as objects: {"phone_number": "...",
+    "carrier": "...", "line_type": "..."}. Older/legacy payloads and test
+    fixtures use plain strings. This handles both.
+    """
+    if isinstance(field, dict):
+        return str(field.get("phone_number") or "").strip()
+    return str(field or "").strip()
+
+
 @app.post("/webhooks/telnyx")
 async def telnyx_webhook(request: Request):
     """Receive inbound SMS via Telnyx webhook (event_type = message.received).
@@ -218,7 +230,7 @@ async def telnyx_webhook(request: Request):
     ev = data.get("data", {})
     if ev.get("event_type") == "message.received":
         payload = ev.get("payload", {})
-        frm = payload.get("from")
+        frm = _telnym_number(payload.get("from"))
         body = payload.get("text", "")
         if frm:
             logger.info("Telnyx inbound SMS from %s: %s", frm, body[:80])
@@ -585,7 +597,7 @@ async def telnyx_call_webhook(request: Request):
 
     if event_type == "call.initiated":
         payload = ev.get("payload", {})
-        from_number = (payload.get("from") or "").strip()
+        from_number = _telnym_number(payload.get("from"))
         if from_number:
             logger.info(
                 "Inbound call from %s — triggering missed-call text-back", from_number
