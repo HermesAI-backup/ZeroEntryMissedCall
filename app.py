@@ -644,6 +644,18 @@ def _book_conversation(db, conversation: Conversation, reason: str | None) -> di
         return {"status": "error", "message": str(e)}
 
 
+def _hot_lead_alerts_owner(business_type: str) -> bool:
+    """Whether a hot-lead branch SMSes the business owner.
+
+    Sevin directive (Aug 16): clients must NOT get hot-lead texts — only
+    genuine emergencies (and bookings, which alert separately) warrant waking
+    the owner. Hot-lead owner alerts are for the SALES/dogfood persona only
+    (that's the lead-gen pipeline); client personas log + tag hot leads and
+    the owner sees them in the daily summary.
+    """
+    return business_type == "sales"
+
+
 def _handle_branch_action(
     db, conversation: Conversation, branch: str, reason: str | None, booking_done: bool = False
 ):
@@ -690,12 +702,17 @@ def _handle_branch_action(
         if contact:
             new_tags = list(set(contact.tags + ["hot-lead"]))
             contact.tags = new_tags
-        # Notify business owner about hot lead
-        owner = settings.business_owner_phone
-        if owner:
-            send_sms(owner, f"🔥 HOT LEAD from {conversation.phone_number}: {reason}")
+        if _hot_lead_alerts_owner(conversation.business_type):
+            owner = settings.business_owner_phone
+            if owner:
+                send_sms(owner, f"🔥 HOT LEAD from {conversation.phone_number}: {reason}")
+            else:
+                logger.warning("HOT LEAD: BUSINESS_OWNER_PHONE not set — alert not sent")
         else:
-            logger.warning("HOT LEAD: BUSINESS_OWNER_PHONE not set — alert not sent")
+            logger.info(
+                "Hot lead on %s persona — no owner alert (logged, daily summary)",
+                conversation.business_type,
+            )
         logger.info("HOT LEAD: %s — %s", conversation.phone_number, reason)
 
 
