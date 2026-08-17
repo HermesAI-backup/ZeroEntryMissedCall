@@ -38,6 +38,7 @@ def _load_api_key() -> str:
 
 LOCAL_PORT = 8080
 TEXML_APP_ID = "3026763910813320521"  # Zero Entry Missed Call AI
+MESSAGING_PROFILE_ID = "40019fe8-601c-4385-afba-a202b791ba88"  # inbound SMS webhook
 POLL_INTERVAL = 15  # seconds between tunnel health checks
 MAX_RESTART_BACKOFF = 300  # max seconds between restart attempts
 
@@ -77,6 +78,51 @@ def update_texml_webhook(base_url: str) -> bool:
         return False
     except Exception as e:
         logger.error("TeXML webhook update failed: %s", e)
+        return False
+
+
+def update_messaging_profile_webhook(base_url: str) -> bool:
+    """Point the messaging profile's webhook_url (inbound SMS) at the tunnel.
+
+    Without this, inbound SMS replies die whenever the tunnel URL changes —
+    outbound keeps working (API direct) but nobody can text back. Same
+    pattern as update_texml_webhook.
+    """
+    api_key = _load_api_key()
+    if not api_key:
+        logger.warning("TELNYX_API_KEY not set — skipping messaging profile update")
+        return False
+
+    webhook_url = f"{base_url}/webhooks/telnyx"
+    payload = json.dumps({"webhook_url": webhook_url}).encode()
+    req = urllib.request.Request(
+        f"https://api.telnyx.com/v2/messaging_profiles/{MESSAGING_PROFILE_ID}",
+        data=payload,
+        method="PATCH",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read().decode())
+            url_on_file = data.get("data", {}).get("webhook_url", "")
+            if url_on_file == webhook_url:
+                logger.info("Messaging profile webhook_url updated → %s", webhook_url)
+                return True
+            else:
+                logger.warning(
+                    "Messaging profile update returned %s (expected %s)",
+                    url_on_file,
+                    webhook_url,
+                )
+                return False
+    except urllib.error.HTTPError as e:
+        logger.error("Messaging profile webhook update HTTP %s: %s", e.code, e.read().decode()[:300])
+        return False
+    except Exception as e:
+        logger.error("Messaging profile webhook update failed: %s", e)
         return False
 
 
@@ -168,11 +214,16 @@ def main():
             url_file.write_text(url)
             logger.info("Saved tunnel URL to .tunnel_url")
 
-            # Update TeXML voice_url
+            # Update TeXML voice_url + messaging profile webhook (inbound SMS)
             if update_texml_webhook(url):
                 logger.info("TeXML webhook synced")
             else:
                 logger.warning("TeXML webhook sync FAILED — will retry next cycle")
+
+            if update_messaging_profile_webhook(url):
+                logger.info("Messaging profile webhook synced")
+            else:
+                logger.warning("Messaging profile webhook sync FAILED — will retry next cycle")
 
             logger.info(
                 "Tunnel running (PID %d). Monitoring every %ds...",
