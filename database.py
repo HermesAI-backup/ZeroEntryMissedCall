@@ -64,6 +64,38 @@ class Contact(Base):
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
 
+class Client(Base):
+    """A Zero Entry client business. Everything per-client lives here —
+    identity, sender number, owner, calendar/sheet, Telnyx profile/campaign.
+
+    The first client is Zero Entry's own dogfood (sales persona, 406 number).
+    """
+
+    __tablename__ = "clients"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(200), nullable=False, unique=True)
+    # Persona + identity render context (replaces the global .env values)
+    business_type = Column(String(50), default="default")
+    business_name = Column(String(200), default="")
+    service_area = Column(String(200), default="")
+    review_link = Column(String(500), default="")
+    # Outbound sender + alert routing
+    telnyx_number = Column(String(20), default="")       # their leased number (outbound from)
+    owner_phone = Column(String(20), default="")         # emergency + booking alerts
+    # Scheduling: per-client calendar + sheet (defaults = current single ones)
+    calendar_id = Column(String(200), default="")        # empty = default calendar
+    spreadsheet_id = Column(String(200), default="")     # empty = default spreadsheet
+    # Telnyx infra ids
+    messaging_profile_id = Column(String(100), default="")
+    texml_app_id = Column(String(100), default="")
+    campaign_id = Column(String(100), default="")        # 10DLC campaign (per-business, required)
+    business_hours = Column(String(200), default="")     # e.g. "Mon-Fri 8-5" (pending wiring)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
 class Conversation(Base):
     """A full AI-customer conversation thread."""
 
@@ -71,6 +103,7 @@ class Conversation(Base):
 
     id = Column(Integer, primary_key=True)
     contact_id = Column(Integer, index=True, nullable=True)
+    client_id = Column(Integer, index=True, nullable=True)  # multi-client (Step 1)
     phone_number = Column(String(20), nullable=False, index=True)
     business_type = Column(String(50), default="default")
     state = Column(String(20), default="active")  # active, completed, timed_out, taken_over
@@ -128,6 +161,40 @@ class ScheduledTask(Base):
 def init_db():
     Base.metadata.create_all(engine)
     _migrate_legacy_columns()
+    ensure_default_client()
+
+
+def ensure_default_client() -> int:
+    """Upsert the dogfood/default client from current .env settings.
+
+    Until real clients are onboarded this record mirrors .env, so flipping
+    BUSINESS_TYPE / BUSINESS_NAME / SERVICE_AREA re-syncs it on startup.
+    Real clients get static rows (see the multi-client build, MTL §3).
+    Returns the client id.
+    """
+    db = get_session()
+    try:
+        values = dict(
+            business_type=settings.business_type,
+            business_name=settings.business_name,
+            service_area=settings.service_area,
+            review_link=settings.review_link,
+            telnyx_number=settings.telnyx_from,
+            owner_phone=settings.business_owner_phone,
+            campaign_id="CW1QZJ1",
+            active=True,
+        )
+        client = db.query(Client).filter(Client.name == "Default (env mirror)").first()
+        if client:
+            for k, v in values.items():
+                setattr(client, k, v)
+        else:
+            client = Client(name="Default (env mirror)", **values)
+            db.add(client)
+        db.commit()
+        return client.id
+    finally:
+        db.close()
 
 
 def _migrate_legacy_columns():
@@ -139,6 +206,7 @@ def _migrate_legacy_columns():
         contact_cols = {c["name"] for c in inspector.get_columns("contacts")}
         task_cols = {c["name"] for c in inspector.get_columns("scheduled_tasks")}
         message_cols = {c["name"] for c in inspector.get_columns("messages")}
+        conv_cols = {c["name"] for c in inspector.get_columns("conversations")}
     except Exception:
         return  # tables may not exist yet on very first run — create_all handles it
 
@@ -148,6 +216,8 @@ def _migrate_legacy_columns():
             db.execute(text("ALTER TABLE contacts ADD COLUMN email VARCHAR(200) DEFAULT ''"))
         if "payload" not in task_cols:
             db.execute(text("ALTER TABLE scheduled_tasks ADD COLUMN payload JSON DEFAULT '{}'"))
+        if "client_id" not in conv_cols:
+            db.execute(text("ALTER TABLE conversations ADD COLUMN client_id INTEGER"))
         # Twilio scrub (Aug 10): drop the legacy twilio_sid column if present
         if "twilio_sid" in message_cols:
             db.execute(text("ALTER TABLE messages DROP COLUMN twilio_sid"))
