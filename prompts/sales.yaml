@@ -24,6 +24,6 @@ rules:
 initial_message: |
   Hey, Sevin here. I help local businesses set up an AI that texts back missed calls and books appointments automatically. $200 to set it up, then 10% of what it books — nothing monthly. Want a quick rundown?
 
-max_ai_responses: 5
+max_ai_responses: 10
 response_delay_seconds: 35
 review_link: "https://g.page/r/CQmLA1fU8A5SECE/review"

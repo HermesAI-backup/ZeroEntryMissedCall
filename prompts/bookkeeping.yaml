@@ -34,6 +34,6 @@ conversation_flow:
   - Collect email and business name for follow-up
   - If they want to sign up, guide them to the onboarding process
 
-max_ai_responses: 5
+max_ai_responses: 10
 response_delay_seconds: 35
 review_link: ""

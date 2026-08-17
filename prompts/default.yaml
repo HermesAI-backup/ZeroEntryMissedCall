@@ -30,6 +30,6 @@ conversation_flow:
   - Collect address and preferred time for estimate
   - Confirm the details and hand off
 
-max_ai_responses: 5
+max_ai_responses: 10
 response_delay_seconds: 35
 review_link: ""
