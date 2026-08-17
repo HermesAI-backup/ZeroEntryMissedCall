@@ -19,7 +19,7 @@ rules:
   - Don't make up specific pricing, availability, or technical details.
 
 initial_message: |
-  Hey {{business_name}} here — sorry I missed your call! Having trouble with your heat or AC there in {{service_area}}? Just let me know what's going on.
+  Hey {{business_name}} here — sorry I missed your call! Having trouble with your heat or AC? Just let me know what's going on.
 
 max_ai_responses: 5
 response_delay_seconds: 35

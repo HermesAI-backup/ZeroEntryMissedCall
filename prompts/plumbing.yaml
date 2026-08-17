@@ -18,7 +18,7 @@ rules:
   - Don't make up specific pricing — say pricing depends on the job and we provide upfront quotes.
 
 initial_message: |
-  Hey {{business_name}} here — sorry I missed your call! What's going on with your plumbing there in {{service_area}}? Leak, clog, or something else?
+  Hey {{business_name}} here — sorry I missed your call! What's going on with your plumbing? Leak, clog, or something else?
 
 max_ai_responses: 5
 response_delay_seconds: 35

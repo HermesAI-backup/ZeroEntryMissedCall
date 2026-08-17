@@ -18,7 +18,7 @@ rules:
   - Don't make up specific pricing, availability, or arborist details.
 
 initial_message: |
-  Hey {{business_name}} here — sorry I missed your call! What's going on with your trees there in {{service_area}}? Trimming, removal, or something else?
+  Hey {{business_name}} here — sorry I missed your call! What's going on with your trees? Trimming, removal, or something else?
 
 max_ai_responses: 5
 response_delay_seconds: 35
