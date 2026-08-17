@@ -38,8 +38,10 @@ def test_repeat_is_duplicate() -> None:
 
 def test_window_expiry() -> None:
     app._WEBHOOK_MSG_IDS["stale-msg"] = time.time() - (app._WEBHOOK_DEDUPE_WINDOW + 10)
-    assert app._is_duplicate_webhook("stale-msg") is False  # pruned + fresh
-    assert "stale-msg" not in app._WEBHOOK_MSG_IDS
+    # Stale entry is pruned, so the id is treated as new (False = not duplicate)
+    assert app._is_duplicate_webhook("stale-msg") is False
+    # ...and its timestamp was refreshed to now
+    assert time.time() - app._WEBHOOK_MSG_IDS["stale-msg"] < 5
 
 
 def test_dedupe_wired_into_webhook() -> None:
