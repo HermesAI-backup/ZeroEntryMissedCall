@@ -48,12 +48,19 @@ Respond in JSON:
 def _get_branch_definitions(business_type: str) -> str:
     """Return branch trigger definitions for the given business type."""
     definitions = {
-        "default": """
+        "default": """\
 - booked: Customer has provided their service need (what they need help with), their address/location, and a preferred day/time for an estimate or appointment.
 - emergency: Customer mentioned an urgent or dangerous situation — property damage, safety hazard, flood, fire, gas leak, tree on house, etc. — that requires immediate help.
 - unqualified: Customer is asking about services the business doesn't offer, is outside the service area, is clearly not interested, or is a wrong number.
 - hot_lead: Customer is very interested, asking detailed questions about pricing, wants to start immediately, or asks for a demo/call.
 - none: None of the above conditions are clearly met yet.
+""",
+        "sales": """\
+- booked: not applicable for this sales persona.
+- emergency: not applicable for this sales persona.
+- unqualified: Prospect is clearly not interested, hostile, or a wrong number.
+- hot_lead: Prospect expressed interest in the missed-call AI service AND provided contact details (name, business name, phone number) or asked detailed pricing/demo questions — they want to move forward. Also hot_lead if they explicitly say they're interested, want a rundown, or ask how to sign up.
+- none: Prospect is still evaluating or hasn't expressed clear interest yet.
 """,
     }
     return definitions.get(business_type, definitions["default"])

@@ -149,11 +149,39 @@ def check_balance(alert: bool = False) -> bool:
         return False
 
 
+def check_llm(alert: bool = False) -> bool:
+    """Check the Hermes LLM proxy (127.0.0.1:8645) is serving — without it,
+    the AI cannot reply (only the Ollama degraded tier would answer).
+    The proxy accepts any bearer token (it attaches the real credential)."""
+    try:
+        key = load_env("LLM_API_KEY") or "unused"
+        req = urllib.request.Request(
+            "http://127.0.0.1:8645/v1/models",
+            headers={
+                "Authorization": f"Bearer {key}",
+                # Proxy 403s the default "Python-urllib/3.11" UA
+                "User-Agent": "health-monitor/1.0",
+            },
+        )
+        r = urllib.request.urlopen(req, timeout=10)
+        ok = r.status == 200
+        if ok:
+            print("✓ LLM proxy: 127.0.0.1:8645")
+        return ok
+    except Exception as e:
+        msg = f"LLM proxy DOWN: {e}"
+        print(f"✗ {msg}")
+        if alert:
+            _send_alert_sms(msg)
+        return False
+
+
 def main():
     alert = "--alert" in sys.argv
 
     ok = True
     ok &= check_server(alert)
+    ok &= check_llm(alert)
     ok &= check_tunnel(alert)
     ok &= check_balance(alert)
     if ok:

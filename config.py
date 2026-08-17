@@ -37,6 +37,11 @@ class Settings:
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
     llm_base_url: str = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
     llm_model: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    # Fallback chain: same-base fallback model, then local Ollama (degraded but always up)
+    llm_fallback_model: str = os.getenv("LLM_FALLBACK_MODEL", "")
+    llm_fallback2_base_url: str = os.getenv("LLM_FALLBACK2_BASE_URL", "http://127.0.0.1:11434/v1")
+    llm_fallback2_model: str = os.getenv("LLM_FALLBACK2_MODEL", "")
+    llm_fallback2_api_key: str = os.getenv("LLM_FALLBACK2_API_KEY", "")
 
     # Business
     business_type: str = os.getenv("BUSINESS_TYPE", "default")

@@ -55,7 +55,7 @@ class ConversationEngine:
         for msg in conversation_history:
             messages.append({"role": msg["role"], "content": msg["content"]})
 
-        reply = await self.llm.chat(messages=messages, temperature=0.7, max_tokens=300)
+        reply = await self.llm.chat(messages=messages, temperature=0.7, max_tokens=600)
 
         # Check if we've hit a branch
         all_messages = conversation_history + [{"role": "assistant", "content": reply}]
