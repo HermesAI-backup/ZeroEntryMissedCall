@@ -476,6 +476,12 @@ async def inbound_sms(
         # Customer replied — cancel the quiet-lead follow-up (conversation is live)
         cancel_tasks("follow_up", From, conversation.id)
 
+        # Commit the inbound message BEFORE the LLM call. Holding a write
+        # transaction open across the (seconds-long) LLM await parks every other
+        # concurrent conversation on the SQLite write lock → "database is
+        # locked". Short transactions let conversations interleave.
+        db.commit()
+
         # Build conversation history
         history_messages = (
             db.query(Message)

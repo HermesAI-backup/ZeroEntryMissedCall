@@ -15,6 +15,7 @@ from sqlalchemy import (
     Boolean,
     JSON,
     create_engine,
+    event,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, Session as SASession
 
@@ -25,7 +26,23 @@ settings = get_settings()
 # Ensure data dir exists
 settings.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-engine = create_engine(f"sqlite:///{settings.db_path}", echo=False)
+# Multi-client concurrency: multiple conversations write at once (each inbound
+# SMS is an independent async task). WAL lets readers/writers overlap, the
+# busy timeout stops "database is locked" under concurrent writes.
+engine = create_engine(
+    f"sqlite:///{settings.db_path}",
+    echo=False,
+    connect_args={"timeout": 15},
+)
+
+
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragmas(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=15000")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
