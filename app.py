@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 
@@ -272,10 +273,17 @@ async def inbound_sms(
     logger.info("Incoming SMS from %s: %s", From, Body[:80])
 
     # --- Whitelist commands ---
+    # Match ONLY real commands: first token must be the command word, and
+    # W/UW shorthand requires a digit-bearing second token (a customer text
+    # like "What time can you come out" must NEVER be treated as a command —
+    # the old `startswith("W") and len>=2` precedence bug ate every reply
+    # that began with W).
     upper = Body.strip().upper()
-    if upper.startswith("WHITELIST") or upper.startswith("W") and len(Body.split()) >= 2:
+    tokens = Body.split()
+    first = tokens[0].upper() if tokens else ""
+    second_has_digit = len(tokens) >= 2 and any(ch.isdigit() for ch in tokens[1])
+    if first == "WHITELIST" or (first == "W" and second_has_digit):
         # WHITELIST +1406xxxxxxx or WHITELIST 406-xxx-xxxx
-        import re
         parts = Body.split(None, 2)
         if len(parts) >= 2:
             raw_num = parts[1]
@@ -305,7 +313,7 @@ async def inbound_sms(
                 send_sms(From, f"❌ Couldn't parse \"{raw_num}\". Send as: WHITELIST +1406xxxxxxx")
                 return PlainTextResponse("")
 
-    if upper.startswith("UNWHITELIST") or upper.startswith("UW"):
+    if first in ("UNWHITELIST", "UW") and second_has_digit:
         parts = Body.split(None, 1)
         if len(parts) >= 2:
             raw_num = parts[1]
