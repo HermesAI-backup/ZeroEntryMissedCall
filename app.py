@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Form
@@ -206,6 +207,27 @@ def _telnym_number(field) -> str:
     return str(field or "").strip()
 
 
+# --- Webhook retry dedupe -------------------------------------------------
+# Telnyx retries failed webhook deliveries (with backoff) for hours. Without
+# dedupe, a retried message.received re-enters the conversation, burns the
+# response counter, and can double-book / double-reply. Dedupe on the Telnyx
+# message id. In-memory: fine for a single-process server; resets on restart.
+_WEBHOOK_MSG_IDS: dict[str, float] = {}
+_WEBHOOK_DEDUPE_WINDOW = 3600.0  # seconds
+
+
+def _is_duplicate_webhook(msg_id: str) -> bool:
+    """True if this Telnyx message id was already processed. Prunes old entries."""
+    now = time.time()
+    stale = [k for k, t in _WEBHOOK_MSG_IDS.items() if now - t > _WEBHOOK_DEDUPE_WINDOW]
+    for k in stale:
+        del _WEBHOOK_MSG_IDS[k]
+    if msg_id in _WEBHOOK_MSG_IDS:
+        return True
+    _WEBHOOK_MSG_IDS[msg_id] = now
+    return False
+
+
 @app.post("/webhooks/telnyx")
 async def telnyx_webhook(request: Request):
     """Receive inbound SMS via Telnyx webhook (event_type = message.received).
@@ -230,6 +252,10 @@ async def telnyx_webhook(request: Request):
     ev = data.get("data", {})
     if ev.get("event_type") == "message.received":
         payload = ev.get("payload", {})
+        msg_id = payload.get("id") or ""
+        if msg_id and _is_duplicate_webhook(msg_id):
+            logger.info("Dropping duplicate webhook (msg id %s) — Telnyx retry", msg_id)
+            return PlainTextResponse("")
         frm = _telnym_number(payload.get("from"))
         body = payload.get("text", "")
         if frm:
@@ -385,12 +411,30 @@ async def inbound_sms(
         # Check response limit
         if conversation.response_count >= conversation.max_responses:
             logger.info(
-                "Conv #%d hit max responses (%d) — marking completed",
+                "Conv #%d hit max responses (%d) — sending closing message",
                 conversation.id,
                 conversation.max_responses,
             )
             conversation.state = "completed"
             db.commit()
+            # Graceful close — never leave the customer hanging in silence.
+            final_text = (
+                "This is an automated text line — I've passed your message along "
+                "and someone will follow up soon. Reply STOP to opt out."
+            )
+            send_sms(From, final_text, from_number=settings.outbound_from)
+            db2 = get_session()
+            try:
+                db2.add(Message(
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content=final_text,
+                ))
+                db2.commit()
+            except Exception:  # noqa: BLE001
+                db2.rollback()
+            finally:
+                db2.close()
             return PlainTextResponse("")
 
         # Save incoming message
