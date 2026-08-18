@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Literal
+
+logger = logging.getLogger("missed-call-ai")
 
 BranchName = Literal["booked", "emergency", "unqualified", "hot_lead", "none"]
 
@@ -29,7 +32,7 @@ CONVERSATION:
 {history_text}
 
 Respond in JSON:
-{{"branch": "booked" | "emergency" | "unqualified" | "hot_lead" | "none", "reason": "brief explanation"}}"""
+{{"branch": {_allowed_branches_json(business_type)}, "reason": "brief explanation"}}"""
 
     llm = LLMClient()
     try:
@@ -40,9 +43,31 @@ Respond in JSON:
         branch = result.get("branch", "none")
         if branch not in ("booked", "emergency", "unqualified", "hot_lead", "none"):
             branch = "none"
+        # Hard guard: hot_lead is a SALES-persona concept. Service personas
+        # (plumbing/hvac/septic/tree) must never classify as hot_lead — a
+        # customer asking about price/timing is booking-intent, not a lead.
+        if branch == "hot_lead" and business_type != "sales":
+            logger.warning(
+                "Branch classifier returned hot_lead for %s persona — coercing to none",
+                business_type,
+            )
+            branch = "none"
         return branch, result.get("reason")
     except Exception:
         return "none", None
+
+
+def _allowed_branches_json(business_type: str) -> str:
+    """The branch options shown to the LLM, per persona.
+
+    Sales gets hot_lead; service personas get booked/emergency/unqualified/
+    none only — a service customer asking detailed pricing/timing questions
+    is booking-intent, NOT a hot lead (2026-08-17: this misclassification
+    completed a plumbing conversation mid-booking).
+    """
+    if business_type == "sales":
+        return '"booked" | "emergency" | "unqualified" | "hot_lead" | "none"'
+    return '"booked" | "emergency" | "unqualified" | "none"'
 
 
 def _get_branch_definitions(business_type: str) -> str:
@@ -52,7 +77,6 @@ def _get_branch_definitions(business_type: str) -> str:
 - booked: Customer has provided their service need (what they need help with), their address/location, and a preferred day/time for an estimate or appointment.
 - emergency: Customer mentioned an urgent or dangerous situation — property damage, safety hazard, flood, fire, gas leak, tree on house, etc. — that requires immediate help.
 - unqualified: Customer is asking about services the business doesn't offer, is outside the service area, is clearly not interested, or is a wrong number.
-- hot_lead: Customer is very interested, asking detailed questions about pricing, wants to start immediately, or asks for a demo/call.
 - none: None of the above conditions are clearly met yet.
 """,
         "sales": """\

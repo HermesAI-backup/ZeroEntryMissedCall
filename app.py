@@ -424,6 +424,28 @@ async def inbound_sms(
                 contact = Contact(phone_number=From, tags=["text-in"])
                 db.add(contact)
                 db.flush()
+
+            # Context carry-over (2026-08-17 fix): if this customer already has
+            # a recent conversation (e.g. it branched to emergency/hot_lead but
+            # stayed live, or completed mid-booking), seed the new conversation
+            # with its metadata and context instead of starting from zero. This
+            # prevents the "I already told you everything" loop where the AI
+            # forgets the address/date/time the customer already gave.
+            prior = (
+                db.query(Conversation)
+                .filter(Conversation.phone_number == From)
+                .order_by(Conversation.id.desc())
+                .first()
+            )
+            prior_meta = dict(prior.metadata_json or {}) if prior else {}
+            # Carry only the facts that are still useful; never carry internal
+            # bookkeeping keys.
+            CARRY_KEYS = (
+                "customer_name", "address", "appt_date", "appt_time",
+                "service_type", "service_description",
+            )
+            carried = {k: v for k, v in prior_meta.items() if k in CARRY_KEYS and v}
+
             conversation = Conversation(
                 contact_id=contact.id,
                 phone_number=From,
@@ -431,17 +453,36 @@ async def inbound_sms(
                 state="active",
                 initial_delay_seconds=0,
                 max_responses=engine_new.max_responses(),
-                response_count=1,
+                response_count=0 if carried else 1,
                 last_ai_sent_at=datetime.datetime.utcnow(),
-                metadata_json={},
+                metadata_json=carried,
             )
             db.add(conversation)
             db.flush()
-            db.add(Message(
-                conversation_id=conversation.id,
-                role="assistant",
-                content=initial,
-            ))
+            if carried:
+                # Never re-greet someone mid-booking: instead of the "sorry I
+                # missed your call" opener, give the AI the known facts so it
+                # picks up where the last conversation left off.
+                facts = ", ".join(f"{k.replace('_', ' ')}: {v}" for k, v in carried.items())
+                context_msg = (
+                    f"[Continuing an earlier conversation with this customer — "
+                    f"already known: {facts}. Do NOT re-ask for these; pick up "
+                    f"from where the booking left off.]"
+                )
+                db.add(Message(
+                    conversation_id=conversation.id,
+                    role="system",
+                    content=context_msg,
+                ))
+                logger.info(
+                    "Auto-start for %s seeded with prior context: %s", From, facts
+                )
+            else:
+                db.add(Message(
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content=initial,
+                ))
             db.commit()
 
         # Check response limit
@@ -563,7 +604,14 @@ async def inbound_sms(
         # Handle branch detection
         if branch and branch != "none":
             conversation.branch = branch
-            conversation.state = "completed"
+            # ONLY a confirmed booking completes the conversation. Emergency /
+            # hot_lead / unqualified fire their side effects (owner alerts,
+            # tags, follow-up cancellation) but the conversation STAYS LIVE —
+            # the customer may keep texting (2026-08-17 fix: completing on
+            # any branch split a plumbing conversation mid-booking and the
+            # next customer text auto-started a fresh amnesiac conversation).
+            if branch == "booked":
+                conversation.state = "completed"
             _handle_branch_action(db, conversation, branch, reason, booking_done=booking_done)
             logger.info(
                 "Conv #%d branched to '%s': %s", conversation.id, branch, reason
