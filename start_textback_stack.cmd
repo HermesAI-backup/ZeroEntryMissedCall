@@ -30,13 +30,13 @@ if not errorlevel 1 (
     start "TextBack uvicorn" /min cmd /c "cd /d C:\Users\Sevin\missed-call-ai && python -m uvicorn app:app --host 0.0.0.0 --port 8080 >> logs\server.log 2>&1"
 )
 
-REM ---- 2) localtunnel watchdog ----
-powershell -NoProfile -Command "if (Get-CimInstance Win32_Process -Filter \"name='python.exe'\" | Where-Object {$_.CommandLine -like '*localtunnel_watchdog*'}) { exit 0 } else { exit 1 }" >nul 2>&1
+REM ---- 2) tunnel watchdog (serveo) ----
+powershell -NoProfile -Command "if (Get-CimInstance Win32_Process -Filter \"name='python.exe'\" | Where-Object {$_.CommandLine -like '*serveo_watchdog*'}) { exit 0 } else { exit 1 }" >nul 2>&1
 if not errorlevel 1 (
     echo [%date% %time%] Watchdog already running - skip >> %LOG%
 ) else (
-    echo [%date% %time%] Starting watchdog... >> %LOG%
-    start "TextBack tunnel watchdog" /min cmd /c "cd /d C:\Users\Sevin\missed-call-ai && python localtunnel_watchdog.py >> logs\watchdog.log 2>&1"
+    echo [%date% %time%] Starting watchdog (serveo)... >> %LOG%
+    start "TextBack tunnel watchdog" /min cmd /c "cd /d C:\Users\Sevin\missed-call-ai && python serveo_watchdog.py >> logs\watchdog.log 2>&1"
 )
 
 REM ---- 3) wait for server + health check ----
