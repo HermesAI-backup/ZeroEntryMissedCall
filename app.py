@@ -547,7 +547,13 @@ async def inbound_sms(
         reply, branch, reason, booking_details = await engine.generate_reply(history)
 
         # Store booking details in conversation metadata for the scheduler
-        meta = conversation.metadata_json or {}
+        # NOTE: copy into a NEW dict — mutating the loaded JSON dict in place
+        # and assigning the same object back is invisible to SQLAlchemy's
+        # change tracking (no dirty flag → UPDATE never fires → commit expires
+        # the attr → next read gets the stale DB value). This silently dropped
+        # every booking-detail update after the first turn (2026-08-17: the
+        # "4pm is fine" booking kept trying the old 15:00).
+        meta = dict(conversation.metadata_json or {})
         if booking_details:
             meta.update({k: v for k, v in booking_details.items() if v})
             conversation.metadata_json = meta
