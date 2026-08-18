@@ -49,7 +49,8 @@ _MONTH_DAY_RE = re.compile(
 _NUMERIC_DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b")
 _RELATIVE_DATE_RE = re.compile(r"\b(today|tomorrow)\b", re.IGNORECASE)
 _WEEKDAY_RE = re.compile(
-    r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    r"\b(mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:rs(?:day)?)?|"
+    r"fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b",
     re.IGNORECASE,
 )
 
@@ -61,8 +62,10 @@ _MONTHS = {
     "dec": 12, "december": 12,
 }
 _WEEKDAYS = {
-    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
-    "friday": 4, "saturday": 5, "sunday": 6,
+    "monday": 0, "mon": 0, "tuesday": 1, "tue": 1, "tues": 1,
+    "wednesday": 2, "wed": 2, "thursday": 3, "thu": 3, "thur": 3,
+    "thurs": 3, "friday": 4, "fri": 4, "saturday": 5, "sat": 5,
+    "sunday": 6, "sun": 6,
 }
 _FUZZY_TIMES = {
     "morning": "09:00", "afternoon": "13:00", "evening": "17:00",
@@ -195,6 +198,31 @@ class ConversationEngine:
         messages = [{"role": "system", "content": system_prompt}]
         for msg in conversation_history:
             messages.append({"role": msg["role"], "content": msg["content"]})
+
+        # Calendar-aware replies (2026-08-17): the AI used to confirm a slot
+        # ("2pm works for us!") before the scheduler ever ran, then corrected
+        # itself after the booking attempt failed. Inject the REAL availability
+        # for the requested day so the LLM can only confirm slots the calendar
+        # says are free. Deterministic regex first (no extra LLM call), then a
+        # calendar fetch only when a date is actually on the table.
+        try:
+            from scheduler import availability_summary
+            det = _regex_extract_booking(conversation_history)
+            if det.get("appt_date"):
+                summary = availability_summary(det["appt_date"])
+                if summary:
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            f"{summary}. Only confirm an appointment time that is "
+                            "listed as FREE. If the customer asks for a time that is "
+                            "TAKEN, tell them it just filled up and offer the closest "
+                            "FREE time BEFORE and AFTER the one they asked for. Do NOT "
+                            "confirm availability of a slot that is not listed FREE."
+                        ),
+                    })
+        except Exception as exc:  # calendar must never break the conversation
+            logger.warning("Calendar context injection failed: %s", exc)
 
         reply = await self.llm.chat(messages=messages, temperature=0.7, max_tokens=600)
 

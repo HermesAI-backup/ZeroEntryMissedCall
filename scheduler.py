@@ -228,6 +228,195 @@ def next_available_slot(
     return slot.strftime("%I:%M %p").lstrip("0")
 
 
+def _last_free_slot(
+    busy_ranges: list[tuple[float, float]],
+    day_start: float,
+    day_end: float,
+    duration_minutes: int = 60,
+    before: float | None = None,
+) -> datetime.datetime | None:
+    """Find the LAST free slot of duration_minutes within [day_start, day_end),
+    ending at or before `before`. busy_ranges are [start, end) epoch timestamps.
+
+    Pure function — no I/O — so it's unit-testable.
+    """
+    slot_seconds = duration_minutes * 60
+    cursor = day_start
+    best: float | None = None
+    for es, ee in sorted(busy_ranges):
+        if ee <= cursor:
+            continue
+        gap_end = es if before is None else min(es, before)
+        if gap_end - cursor >= slot_seconds:
+            candidate = gap_end - slot_seconds
+            if best is None or candidate > best:
+                best = candidate
+        cursor = max(cursor, ee)
+    gap_end = day_end if before is None else min(day_end, before)
+    if gap_end - cursor >= slot_seconds:
+        candidate = gap_end - slot_seconds
+        if best is None or candidate > best:
+            best = candidate
+    if best is None:
+        return None
+    return datetime.datetime.fromtimestamp(best)
+
+
+def nearest_available_slots(
+    date_str: str,
+    time_str: str = "",
+    duration_minutes: int = 60,
+    day_start_hour: int = 8,
+    day_end_hour: int = 18,
+    events: list | None = None,
+) -> dict:
+    """Find the closest open slots BEFORE and AFTER the requested time.
+
+    Returns {"before": "1:00 PM"|None, "after": "5:00 PM"|None}. The customer
+    asked for a time that's taken — offer the nearest free slot on EACH side,
+    not just the next one after (2026-08-17: fallback only searched forward,
+    so "2pm" conflict offered 5pm but never 1pm/noon even when free).
+
+    Pass `events` (list of gapi calendar events) to test without I/O.
+    """
+    try:
+        if time_str and ("AM" in time_str.upper() or "PM" in time_str.upper()):
+            dt = datetime.datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %I:%M %p")
+        elif time_str:
+            dt = datetime.datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+        else:
+            dt = datetime.datetime.strptime(date_str, "%Y-%m-%d").replace(hour=day_start_hour)
+    except ValueError:
+        return {"before": None, "after": None}
+
+    tz = "-06:00"
+    day_start = dt.replace(hour=day_start_hour, minute=0)
+    day_end = dt.replace(hour=day_end_hour, minute=0)
+
+    if events is None:
+        result = _run_gapi(
+            "calendar", "list",
+            "--start", day_start.strftime(f"%Y-%m-%dT%H:%M:%S{tz}"),
+            "--end", day_end.strftime(f"%Y-%m-%dT%H:%M:%S{tz}"),
+        )
+        if isinstance(result, dict) and result.get("status") == "error":
+            logger.error("Calendar check failed: %s", result.get("error"))
+            return {"before": None, "after": None}
+        events = result if isinstance(result, list) else result.get("data", [])
+
+    busy = []
+    for event in events:
+        es_raw, ee_raw = _event_bounds(event)
+        if es_raw and ee_raw:
+            try:
+                busy.append((
+                    datetime.datetime.fromisoformat(es_raw).timestamp(),
+                    datetime.datetime.fromisoformat(ee_raw).timestamp(),
+                ))
+            except (ValueError, TypeError):
+                continue
+
+    before_slot = _last_free_slot(
+        busy, day_start.timestamp(), day_end.timestamp(),
+        duration_minutes, before=dt.timestamp(),
+    )
+    after_slot = _first_free_slot(
+        busy, day_start.timestamp(), day_end.timestamp(),
+        duration_minutes, after=dt.timestamp(),
+    )
+    return {
+        "before": before_slot.strftime("%I:%M %p").lstrip("0") if before_slot else None,
+        "after": after_slot.strftime("%I:%M %p").lstrip("0") if after_slot else None,
+    }
+
+
+def availability_summary(
+    date_str: str,
+    duration_minutes: int = 60,
+    day_start_hour: int = 8,
+    day_end_hour: int = 18,
+    events: list | None = None,
+) -> str:
+    """Human-readable free/taken summary for a day, for LLM context injection.
+
+    Returns e.g.:
+      'Calendar for 2026-08-19: TAKEN 2:00 PM, 3:00 PM; FREE 8:00 AM, 9:00 AM,
+       10:00 AM, 11:00 AM, 12:00 PM, 1:00 PM, 4:00 PM, 5:00 PM'
+    or "" if the date is invalid / calendar unreachable (callers should treat
+    "" as "no calendar info — don't over-promise").
+
+    This is the pre-reply guard: generate_reply injects it so the LLM can only
+    confirm slots the calendar says are actually free (2026-08-17: the AI said
+    "2pm works for us!" without checking, then corrected itself after booking).
+    """
+    try:
+        day_start = datetime.datetime.strptime(
+            date_str, "%Y-%m-%d"
+        ).replace(hour=day_start_hour, minute=0)
+    except ValueError:
+        return ""
+    day_end = day_start.replace(hour=day_end_hour, minute=0)
+    tz = "-06:00"
+
+    if events is None:
+        result = _run_gapi(
+            "calendar", "list",
+            "--start", day_start.strftime(f"%Y-%m-%dT%H:%M:%S{tz}"),
+            "--end", day_end.strftime(f"%Y-%m-%dT%H:%M:%S{tz}"),
+        )
+        if isinstance(result, dict) and result.get("status") == "error":
+            logger.error("Calendar check failed: %s", result.get("error"))
+            return ""
+        events = result if isinstance(result, list) else result.get("data", [])
+
+    busy = []
+    for event in events:
+        es_raw, ee_raw = _event_bounds(event)
+        if es_raw and ee_raw:
+            try:
+                busy.append((
+                    datetime.datetime.fromisoformat(es_raw).timestamp(),
+                    datetime.datetime.fromisoformat(ee_raw).timestamp(),
+                ))
+            except (ValueError, TypeError):
+                continue
+
+    slot_seconds = duration_minutes * 60
+    ds = day_start.timestamp()
+    de = day_end.timestamp()
+
+    taken = []
+    for es, ee in sorted(busy):
+        if ee <= ds or es >= de:
+            continue
+        taken.append(datetime.datetime.fromtimestamp(max(es, ds)).strftime("%I:%M %p").lstrip("0"))
+
+    free = []
+    cursor = ds
+    for es, ee in sorted(busy):
+        if ee <= cursor:
+            continue
+        if es - cursor >= slot_seconds:
+            t = cursor
+            while t + slot_seconds <= es:
+                free.append(datetime.datetime.fromtimestamp(t).strftime("%I:%M %p").lstrip("0"))
+                t += slot_seconds
+        cursor = max(cursor, ee)
+    t = cursor
+    while t + slot_seconds <= de:
+        free.append(datetime.datetime.fromtimestamp(t).strftime("%I:%M %p").lstrip("0"))
+        t += slot_seconds
+
+    parts = [f"Calendar for {date_str}:"]
+    if taken:
+        parts.append("TAKEN " + ", ".join(taken))
+    if free:
+        parts.append("FREE " + ", ".join(free))
+    else:
+        parts.append("FREE none (fully booked)")
+    return "; ".join(parts)
+
+
 def book_appointment(
     date_str: str,
     time_str: str,

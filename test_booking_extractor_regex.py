@@ -75,6 +75,16 @@ def test_wednesday_next_week() -> None:
     assert (parsed - today).days <= 7, f"should be next Wednesday at most: {r}"
 
 
+def test_weekday_abbreviations() -> None:
+    today = datetime.date.today()
+    for abbr, wd in [("mon", 0), ("tue", 1), ("wed", 2), ("thu", 3), ("fri", 4), ("sat", 5), ("sun", 6)]:
+        r = _regex_extract_booking(hist(f"{abbr} works"))
+        assert r["appt_date"], f"{abbr} should resolve a date: {r}"
+        parsed = datetime.date.fromisoformat(r["appt_date"])
+        assert parsed.weekday() == wd, f"{abbr} -> {parsed} weekday {parsed.weekday()}, want {wd}"
+        assert parsed > today, f"{abbr} must be future: {parsed}"
+
+
 def test_tomorrow() -> None:
     today = datetime.date.today()
     r = _regex_extract_booking(hist("tomorrow morning"))

@@ -89,7 +89,9 @@ async def main() -> int:
         cid = conv[0]
 
         m1 = _meta(cid)
-        assert m1.get("address") == "1234 test st", f"address not persisted: {m1}"
+        # Case-insensitive: the LLM extractor may capitalize ("1234 Test St")
+        # — what matters is the value persisted, not the casing.
+        assert m1.get("address", "").lower() == "1234 test st", f"address not persisted: {m1}"
 
         # Turn 2: add a date/time — MUST override, not keep stale
         await inbound_sms(From=TEST_PHONE, Body="wednesday 2pm works")

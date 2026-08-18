@@ -581,10 +581,19 @@ async def inbound_sms(
                 return PlainTextResponse("")
             if booking_result.get("status") != "booked":
                 if booking_result.get("status") == "conflict":
-                    from scheduler import next_available_slot
+                    from scheduler import nearest_available_slots
                     meta = conversation.metadata_json or {}
-                    nxt = next_available_slot(meta.get("appt_date", ""), meta.get("appt_time", ""))
-                    nxt_clause = f" — how about {nxt} instead?" if nxt else ""
+                    nxt = nearest_available_slots(
+                        meta.get("appt_date", ""), meta.get("appt_time", "")
+                    )
+                    opts = []
+                    if nxt.get("before"):
+                        opts.append(nxt["before"])
+                    if nxt.get("after"):
+                        opts.append(nxt["after"])
+                    nxt_clause = f" — how about {opts[0]} instead?" if len(opts) == 1 else (
+                        f" — how about {' or '.join(opts)} instead?" if opts else ""
+                    )
                     reply = (
                         f"Ah, {meta.get('appt_time', 'that time')} just filled up"
                         f"{nxt_clause} Or let me know another time that works for you."
