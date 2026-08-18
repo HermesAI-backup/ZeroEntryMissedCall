@@ -551,6 +551,12 @@ async def inbound_sms(
         if booking_details:
             meta.update({k: v for k, v in booking_details.items() if v})
             conversation.metadata_json = meta
+            # Commit BEFORE _book_conversation: it opens nested sessions
+            # (schedule_reminder / schedule_completion_flow) that INSERT into
+            # scheduled_tasks. This session's uncommitted write lock would
+            # deadlock them ("database is locked") — a live booking's
+            # thank-you/review texts were silently never scheduled.
+            db.commit()
 
         # ---- BOOKED: book BEFORE confirming. Never tell a customer "see you
         # then!" for a slot that failed the calendar write. ----
@@ -600,6 +606,14 @@ async def inbound_sms(
 
         conversation.response_count = (conversation.response_count or 0) + 1
         conversation.last_ai_sent_at = datetime.datetime.utcnow()
+
+        # Commit the reply BEFORE the branch action: _handle_branch_action →
+        # _book_conversation → schedule_completion_flow opens NESTED sessions
+        # that INSERT into scheduled_tasks. Holding this session's write
+        # transaction open across them deadlocks SQLite ("database is locked")
+        # — same lesson as commit-before-LLM (2026-08-16). A live booking's
+        # thank-you/review texts were silently never scheduled because of this.
+        db.commit()
 
         # Handle branch detection
         if branch and branch != "none":
