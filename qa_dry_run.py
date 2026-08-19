@@ -2,10 +2,15 @@
 classifier + booking extractor) with scripted customer turns. No SMS, no DB,
 no scheduler writes.
 
+PERSONA-DRIVEN since 2026-08-18: the 6 service scenarios are TEMPLATES filled
+from PERSONA_VOCAB. Adding a new vertical = copy a 5-line vocab block + a
+prompt YAML — the same scenarios then run against that business type with the
+right vocabulary (issue, emergency, price item, town). No scenario rewrites.
+
 Usage:
-    python qa_dry_run.py --persona plumbing   # client persona (env overrides)
+    python qa_dry_run.py --persona plumbing   # one service vertical
     python qa_dry_run.py --persona sales      # live sales persona
-    python qa_dry_run.py                      # both
+    python qa_dry_run.py                      # all defined personas
 
 Output: console summary + transcripts to data/qa/qa_run_<ts>_<persona>.md
 """
@@ -22,40 +27,71 @@ from pathlib import Path
 PROJECT = Path(__file__).resolve().parent
 OUT_DIR = PROJECT / "data" / "qa"
 
-# Persona env overrides (must happen BEFORE config import — lru_cache)
-PERSONA_ENV = {
-    "plumbing": {"BUSINESS_NAME": "Helena Plumbing Co", "SERVICE_AREA": "Helena, MT"},
+# ---------------------------------------------------------------------------
+# Per-vertical vocabulary. Add a new business model here (5 lines) + a prompt
+# YAML in prompts/ and the whole scenario suite runs against it for free.
+# BUSINESS_NAME / SERVICE_AREA are set as env overrides BEFORE config import
+# (get_settings() is @lru_cache'd — env must be set before first import).
+# ---------------------------------------------------------------------------
+PERSONA_VOCAB: dict[str, dict[str, str]] = {
+    "plumbing": {
+        "BUSINESS_NAME": "Helena Plumbing Co",
+        "SERVICE_AREA": "Helena, MT",
+        "issue": "my kitchen sink is clogged",
+        "emergency": "my basement is flooding RIGHT NOW water everywhere!!",
+        "price_item": "water heater install",
+        "town": "Helena",
+    },
+    "hvac": {
+        "BUSINESS_NAME": "Peak Performance Heating & Cooling",
+        "SERVICE_AREA": "Helena, MT",
+        "issue": "my AC stopped blowing cold air",
+        "emergency": "my furnace just died and it's freezing in here!!",
+        "price_item": "new furnace install",
+        "town": "Helena",
+    },
+    "septic": {
+        "BUSINESS_NAME": "Helena Septic & Well",
+        "SERVICE_AREA": "Helena, MT",
+        "issue": "my septic tank is backing up in the yard",
+        "emergency": "raw sewage is backing up into my basement RIGHT NOW!!",
+        "price_item": "new septic tank install",
+        "town": "Helena",
+    },
     "sales": {},
 }
 
-# name, persona, turns (customer messages), expected branch, what to check
-SCENARIOS: list[dict] = [
-    # ---------------- CLIENT PERSONA: plumbing ----------------
-    dict(id="emergency_flood", persona="plumbing", expected="emergency",
-         turns=["my basement is flooding RIGHT NOW water everywhere!!",
+# The 6 SERVICE scenario templates — shared by every service vertical; {field}s
+# are filled from PERSONA_VOCAB at build time.
+SERVICE_SCENARIO_TEMPLATES: list[dict] = [
+    dict(id="emergency", expected="emergency",
+         turns=["{emergency}",
                 "yes can you come now? address is 45 River Rd, and my name is Dana"],
          check="must react with urgency, flag emergency, get address — NOT try to sell"),
-    dict(id="booking_simple", persona="plumbing", expected="booked",
-         turns=["yeah my kitchen sink is clogged",
-                "name's Tom, address 123 Main St, Helena",
+    dict(id="booking_simple", expected="booked",
+         turns=["{issue}",
+                "name's Tom, address 123 Main St, {town}",
                 "tomorrow morning works, like 9 or 10"],
          check="must collect name/address/day/time and land on booked"),
-    dict(id="price_pushback", persona="plumbing", expected="none",
-         turns=["how much for a water heater install?",
+    dict(id="price_pushback", expected="none",
+         turns=["how much for a {price_item}?",
                 "wow that's way more than I wanted to spend"],
          check="must NOT invent a price (rule: upfront quotes only), handle objection"),
-    dict(id="vague_time", persona="plumbing", expected="none",
+    dict(id="vague_time", expected="none",
          turns=["sometime this week, whenever you guys can get here",
                 "i dunno, tuesday afternoon maybe?",
                 "ok yeah tuesday works, 1pm"],
          check="must pin down a specific day/time, not accept 'sometime'"),
-    dict(id="wrong_number", persona="plumbing", expected="unqualified",
+    dict(id="wrong_number", expected="unqualified",
          turns=["who is this? I think you have the wrong number"],
          check="graceful exit, no pushing"),
-    dict(id="rude_spam", persona="plumbing", expected="unqualified",
+    dict(id="rude_spam", expected="unqualified",
          turns=["shut up bot", "why are you texting me"],
          check="stays professional, no loop, doesn't get defensive"),
-    # ---------------- LIVE PERSONA: sales ----------------
+]
+
+# Sales persona — no templates, it's a different job (sells the AI service).
+SALES_SCENARIOS: list[dict] = [
     dict(id="prospect_interested", persona="sales", expected="hot_lead",
          turns=["yeah this sounds cool, send me the info",
                 "ok im Bob, I run Bob's Plumbing in Butte, my number is 406-555-1234"],
@@ -72,6 +108,20 @@ SCENARIOS: list[dict] = [
 ]
 
 
+def build_scenarios() -> list[dict]:
+    """Expand templates per persona. Service verticals share the 6 templates;
+    sales has its own list. A persona with empty vocab (sales) gets no env."""
+    scenarios: list[dict] = []
+    for persona, vocab in PERSONA_VOCAB.items():
+        templates = SALES_SCENARIOS if persona == "sales" else SERVICE_SCENARIO_TEMPLATES
+        for t in templates:
+            scn = dict(t)
+            scn["persona"] = persona
+            scn["turns"] = [turn.format(**vocab) for turn in t["turns"]]
+            scenarios.append(scn)
+    return scenarios
+
+
 RED_FLAG_PATTERNS: list[tuple[str, str]] = [
     ("stale_15_pricing", r"\b15\s?%|fifteen percent|15 percent"),
     ("invented_job_price", r"\$\s?\d{2,}"),
@@ -86,8 +136,8 @@ def red_flags(reply: str, persona: str) -> list[str]:
     hits = []
     for name, pat in RED_FLAG_PATTERNS:
         if name == "stale_15_pricing" and persona != "sales":
-            continue  # plumbing persona legitimately never mentions 15%
-        if name == "invented_job_price" and persona != "plumbing":
+            continue  # only the sales persona ever mentions 15%
+        if name == "invented_job_price" and persona == "sales":
             continue  # sales persona SHOULD quote $200 — not a red flag
         if re.search(pat, reply, re.IGNORECASE):
             hits.append(name)
@@ -150,10 +200,10 @@ def render_transcript(res: dict) -> str:
     return "\n".join(lines)
 
 
-async def run_persona(persona: str) -> list[dict]:
+async def run_persona(persona: str, scenarios: list[dict]) -> list[dict]:
     print(f"\n=== Persona: {persona} ===")
     results = []
-    for scn in [s for s in SCENARIOS if s["persona"] == persona]:
+    for scn in [s for s in scenarios if s["persona"] == persona]:
         res = await run_scenario(scn)
         results.append(res)
         status = "✅" if not res["flags"] else "⚠️"
@@ -164,21 +214,23 @@ async def run_persona(persona: str) -> list[dict]:
 
 async def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--persona", choices=["plumbing", "sales"], default=None)
+    parser.add_argument("--persona", choices=sorted(PERSONA_VOCAB), default=None)
     args = parser.parse_args()
 
-    personas = [args.persona] if args.persona else ["plumbing", "sales"]
+    personas = [args.persona] if args.persona else list(PERSONA_VOCAB)
+    scenarios = build_scenarios()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Set persona env overrides BEFORE importing config
+    # Set persona env overrides BEFORE importing config (lru_cache)
     for persona in personas:
-        for k, v in PERSONA_ENV.get(persona, {}).items():
-            os.environ[k] = v
+        for k, v in PERSONA_VOCAB.get(persona, {}).items():
+            if k in ("BUSINESS_NAME", "SERVICE_AREA"):
+                os.environ[k] = v
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     all_results = []
     for persona in personas:
-        results = await run_persona(persona)
+        results = await run_persona(persona, scenarios)
         all_results.extend(results)
         report = [f"# QA Dry-Run — {persona} — {ts}", ""]
         report += [render_transcript(r) for r in results]
