@@ -37,7 +37,7 @@ PERSONA_VOCAB: dict[str, dict[str, str]] = {
     "plumbing": {
         "BUSINESS_NAME": "Helena Plumbing Co",
         "SERVICE_AREA": "Helena, MT",
-        "issue": "my kitchen sink is clogged",
+        "issue": "yeah my kitchen sink is clogged",
         "emergency": "my basement is flooding RIGHT NOW water everywhere!!",
         "price_item": "water heater install",
         "town": "Helena",
