@@ -81,6 +81,49 @@ def test_hot_lead_coerced_for_service_personas() -> None:
     asyncio.run(_stub_hot_lead_eval())
 
 
+async def _stub_emergency_evals() -> None:
+    """Patch LLMClient.chat_structured to return emergency, then assert the
+    deterministic evidence gate (2026-08-18 adversarial finding): the LLM
+    over-triggers emergency on emoji/tone; without customer evidence the
+    branch must coerce to none (the owner SMS is the expensive path)."""
+    import llm_client
+
+    orig = llm_client.LLMClient.chat_structured
+
+    async def fake(self, messages, json_schema, temperature=0.3):
+        return {"branch": "emergency", "reason": "customer sounds urgent"}
+
+    llm_client.LLMClient.chat_structured = fake  # type: ignore[assignment]
+    try:
+        # Emoji/tone only — must coerce to none (no owner alert fired)
+        branch, _ = await evaluate_branch(
+            [{"role": "user", "content": "🔥🚨💧💦"}], "plumbing"
+        )
+        assert branch == "none", f"emoji should NOT trigger emergency, got {branch}"
+        # All-caps urgency without a real hazard — must coerce to none
+        branch2, _ = await evaluate_branch(
+            [{"role": "user", "content": "I NEED A PLUMBER RIGHT NOW!!!!"}], "plumbing"
+        )
+        assert branch2 == "none", f"all-caps should NOT trigger emergency, got {branch2}"
+        # REAL emergency words — must pass through
+        branch3, _ = await evaluate_branch(
+            [{"role": "user", "content": "my basement is flooding RIGHT NOW!!"}], "plumbing"
+        )
+        assert branch3 == "emergency", f"flooding should trigger emergency, got {branch3}"
+        branch4, _ = await evaluate_branch(
+            [{"role": "user", "content": "I smell gas in the house"}], "plumbing"
+        )
+        assert branch4 == "emergency", f"gas smell should trigger emergency, got {branch4}"
+    finally:
+        llm_client.LLMClient.chat_structured = orig
+
+
+def test_emergency_evidence_gate() -> None:
+    import asyncio
+
+    asyncio.run(_stub_emergency_evals())
+
+
 def test_only_booked_completes_conversation() -> None:
     # The branch-handling block is the one right before the "branched to" log.
     idx = APP_SRC.index("branched to '%s'")

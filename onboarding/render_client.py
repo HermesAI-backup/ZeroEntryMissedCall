@@ -68,6 +68,7 @@ def render_prompt(a: dict) -> str:
 
     rules = [
         tone_line,
+        "If asked whether you're a robot/AI/real person: be honest — you're the AI assistant for the business, here to get them booked. Never claim to be a real person; saying you are is an instant trust-killer when they find out.",
         "Keep responses short — 1-3 sentences max.",
         "Never ask more than one question at a time.",
         "Wrap up efficiently — once you have the issue, address, and a time, confirm the booking and end the conversation. No small talk, no extra questions after it's booked.",

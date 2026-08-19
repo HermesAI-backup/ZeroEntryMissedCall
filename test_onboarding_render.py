@@ -65,6 +65,13 @@ check("bigsky guardrail 1",
 check("bigsky guardrail 2",
       any("never mention competitors" in r for r in bigsky["rules"]))
 
+# honesty rule (2026-08-18 adversarial finding: service AI lied "I'm a real
+# person" when asked; the renderer must always carry the honesty rule)
+check("acme honesty rule present",
+      any("Never claim to be a real person" in r for r in acme["rules"]))
+check("bigsky honesty rule present",
+      any("Never claim to be a real person" in r for r in bigsky["rules"]))
+
 # template vars survive
 check("acme identity keeps {{business_name}}", "{{business_name}}" in acme["identity"])
 check("acme identity keeps {{service_area}}", "{{service_area}}" in acme["identity"])

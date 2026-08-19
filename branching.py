@@ -3,11 +3,30 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Literal
 
 logger = logging.getLogger("missed-call-ai")
 
 BranchName = Literal["booked", "emergency", "unqualified", "hot_lead", "none"]
+
+# Deterministic emergency-evidence gate (2026-08-18, adversarial QA finding).
+# The LLM branch classifier over-triggers "emergency" on tone/emoji alone —
+# a customer texting "🔥🚨💧💦" or "I NEED A PLUMBER RIGHT NOW!!!!" got the
+# emergency branch, which SMSes the business owner (🚨 EMERGENCY alert) and
+# tags the contact. That's the expensive, annoying path; it must be evidence-
+# backed, same philosophy as the §18 extractor regex net. If the LLM says
+# emergency but the CUSTOMER's messages contain none of these, coerce to none.
+# Only actual HAZARDS + an explicit "emergency" claim pass; pure urgency
+# markers ("right now", "asap", all-caps) do NOT — urgency without a named
+# hazard is a booking, not an emergency.
+_EMERGENCY_EVIDENCE = re.compile(
+    r"\b(flood(ing|ed)?|burst|gas( smell| leak)?|no water|without water|"
+    r"sewage|sewer|back(ing)? up|water everywhere|on the floor|"
+    r"ceiling (leaking|falling)|tree (on|fell|through)|fire|smoke|"
+    r"emergency|dangerous|overflowing|rupture|broken pipe|major leak)\b",
+    re.IGNORECASE,
+)
 
 
 async def evaluate_branch(
@@ -52,6 +71,23 @@ Respond in JSON:
                 business_type,
             )
             branch = "none"
+        # Hard guard: emergency requires evidence in the CUSTOMER's words.
+        # Adversarial QA (2026-08-18) showed the LLM classifying emoji/tone
+        # (🔥🚨💧💦, all-caps) as emergency — which SMSes the business owner.
+        # The owner alert is expensive; only fire it when the customer named
+        # something real. The reply can still acknowledge urgency; the BRANCH
+        # (and its side effects) is what gets gated.
+        if branch == "emergency" and business_type != "sales":
+            customer_text = " ".join(
+                m.get("content", "") for m in conversation_history if m.get("role") == "user"
+            )
+            if not _EMERGENCY_EVIDENCE.search(customer_text):
+                logger.warning(
+                    "Branch classifier returned emergency for %s without customer evidence "
+                    "(text: %.80r) — coercing to none",
+                    business_type, customer_text,
+                )
+                branch = "none"
         return branch, result.get("reason")
     except Exception:
         return "none", None
