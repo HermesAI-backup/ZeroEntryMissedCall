@@ -181,19 +181,57 @@ def schedule_reminder(
 # ---------------------------------------------------------------------------
 
 
+def cancel_follow_ups(phone_number: str, conversation_id: int | None = None) -> int:
+    """Cancel ALL pending no-reply follow-up touches for a phone/conversation.
+
+    Covers both kinds ('follow_up' + 'follow_up_2') — a customer reply, a
+    booking, or an unqualified close must stop the whole nudge sequence, not
+    just the first touch (2026-08-18, HighLevel multi-touch pattern).
+    """
+    total = 0
+    for kind in ("follow_up", "follow_up_2"):
+        total += cancel_tasks(kind, phone_number, conversation_id)
+    return total
+
+
 def schedule_follow_up(
     phone_number: str,
     conversation_id: int | None,
     business_name: str | None = None,
-) -> ScheduledTask | None:
-    """Schedule one follow-up text 24h after the initial missed-call text."""
-    run_at = _utcnow() + datetime.timedelta(hours=24)
+) -> list[ScheduledTask]:
+    """Schedule TWO no-reply follow-ups with DIFFERENT angles (2026-08-18).
+
+    Follows HighLevel's multi-touch quiet-lead pattern: if the customer never
+    replies to the initial text-back, nudge once at +FOLLOW_UP_HOURS (24h) and
+    again at +FOLLOW_UP_2_HOURS (48h) with different copy and a booking link
+    angle on the second touch. Every nudge carries the opt-out line (Google
+    10DLC compliance — the old single follow-up had no opt-out).
+
+    Both are cancelled by cancel_follow_ups() when the customer replies,
+    books, or goes unqualified.
+    """
+    run_at = _utcnow() + datetime.timedelta(hours=settings.follow_up_hours)
+    run_at_2 = _utcnow() + datetime.timedelta(hours=settings.follow_up_2_hours)
     biz = business_name or settings.business_name
-    body = (
+
+    body_1 = (
         f"Hey! Just following up from {biz} — we tried reaching you earlier "
-        f"about your call. Still need help? Reply here and we'll get you sorted."
+        f"about your call. Still need help? Reply here and we'll get you sorted. "
+        f"Reply STOP to opt out."
     )
-    return schedule_task("follow_up", phone_number, run_at, body, conversation_id)
+    body_2 = (
+        f"One more from {biz} — if you're still after {settings.service_area} "
+        f"help, text us what you need and we'll get it on the calendar. "
+        f"No phone call required. Reply STOP to opt out."
+    )
+    tasks: list[ScheduledTask] = []
+    t1 = schedule_task("follow_up", phone_number, run_at, body_1, conversation_id)
+    if t1:
+        tasks.append(t1)
+    t2 = schedule_task("follow_up_2", phone_number, run_at_2, body_2, conversation_id)
+    if t2:
+        tasks.append(t2)
+    return tasks
 
 
 # ---------------------------------------------------------------------------

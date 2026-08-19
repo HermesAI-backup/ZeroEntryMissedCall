@@ -26,6 +26,11 @@ class Settings:
     # Review Engine (#17) — T+2h thank-you + review request, then follow-ups
     review_follow_up_hours: int = int(os.getenv("REVIEW_FOLLOW_UP_HOURS", "48"))
     review_email_delay_hours: int = int(os.getenv("REVIEW_EMAIL_DELAY_HOURS", "72"))
+    # Quiet-lead no-reply follow-ups (2026-08-18): two touches with DIFFERENT
+    # angles + opt-out, instead of one generic nudge. Follows HighLevel's
+    # multi-touch pattern.
+    follow_up_hours: int = int(os.getenv("FOLLOW_UP_HOURS", "24"))    # 1st nudge
+    follow_up_2_hours: int = int(os.getenv("FOLLOW_UP_2_HOURS", "48"))  # 2nd, different angle
     # Email fallback (customer never engages with texts). SMTP creds empty = email skipped.
     smtp_host: str = os.getenv("SMTP_HOST", "")
     smtp_port: int = int(os.getenv("SMTP_PORT", "587"))

@@ -31,6 +31,7 @@ from automation import (
     schedule_completion_flow,
     cancel_tasks,
     cancel_tasks_of_phone,
+    cancel_follow_ups,
     run_task_worker,
     _parse_appt,
 )
@@ -522,8 +523,9 @@ async def inbound_sms(
         )
         db.add(msg_in)
 
-        # Customer replied — cancel the quiet-lead follow-up (conversation is live)
-        cancel_tasks("follow_up", From, conversation.id)
+        # Customer replied — cancel the quiet-lead follow-ups (conversation is
+        # live; both nudge touches must stop, not just the first)
+        cancel_follow_ups(From, conversation.id)
 
         # Commit the inbound message BEFORE the LLM call. Holding a write
         # transaction open across the (seconds-long) LLM await parks every other
@@ -722,7 +724,7 @@ def _book_conversation(db, conversation: Conversation, reason: str | None) -> di
                 review_link=engine_link or None,
                 conversation_id=conversation.id,
             )
-            cancel_tasks("follow_up", conversation.phone_number, conversation.id)
+            cancel_follow_ups(conversation.phone_number, conversation.id)
         return result
     except Exception as e:
         logger.error("SCHEDULER error: %s", e)
@@ -780,8 +782,8 @@ def _handle_branch_action(
             new_tags = list(set(contact.tags + ["unqualified"]))
             contact.tags = new_tags
         logger.info("UNQUALIFIED: %s — %s", conversation.phone_number, reason)
-        # Not interested — cancel the 24h follow-up
-        cancel_tasks("follow_up", conversation.phone_number, conversation.id)
+        # Not interested — cancel the quiet-lead follow-ups (both touches)
+        cancel_follow_ups(conversation.phone_number, conversation.id)
 
     elif branch == "hot_lead":
         if contact:

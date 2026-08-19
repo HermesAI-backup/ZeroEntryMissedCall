@@ -40,5 +40,6 @@ NUL
 data/conversations.db-wal
 data/conversations.db-shm
 .health_state.json
+.review_queue_state.json
 # Health state
 .health_state.json
