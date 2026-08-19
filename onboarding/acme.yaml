@@ -1,0 +1,13 @@
+client: Acme Plumbing LLC
+business_type: plumbing
+business_name: Acme Plumbing
+service_area: "Helena, MT"
+services: [clogs, water heaters, camera inspection]
+emergency_triggers: [no water, gas smell, sewage backup]
+pricing_policy: no_upfront_quotes
+business_hours: "Mon-Fri 8-6, Sat 9-12, closed Sun"
+booking_horizon_days: 7
+owner_phone: "+14065551234"
+guardrails: []
+tone: casual
+review_link: ""

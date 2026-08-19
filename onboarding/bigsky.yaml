@@ -1,0 +1,13 @@
+client: Big Sky Heating & Air
+business_type: hvac
+business_name: Big Sky Heating & Air
+service_area: "Bozeman, MT"
+services: [AC repair, furnace install, duct cleaning]
+emergency_triggers: [no heat in winter, gas smell, carbon monoxide alarm]
+pricing_policy: flat_rate_menu
+business_hours: "Mon-Fri 7-7, Sat 8-2, closed Sun"
+booking_horizon_days: 14
+owner_phone: "+14065559876"
+guardrails: [never promise 24/7 service, never mention competitors]
+tone: professional
+review_link: "https://g.page/r/TEST/review"
